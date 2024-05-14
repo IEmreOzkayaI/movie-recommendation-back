@@ -1,8 +1,13 @@
 import jwt
 import datetime
 from flask import request, jsonify
-from .models import User, db, Movie , Rating, Category
+from .models import User, db, Movie , Rating, Category,movie_category
 from flask import current_app as app  # Assuming the Flask app is imported as 'app' in your models
+from machine_model.content_based import get_recommended_movies
+from machine_model.collaborative_filtering import recommend_movies
+import pandas as pd
+import numpy as np
+from pyspark.sql import SparkSession, Row
 
 def home():
     return "Hello, World!"
@@ -101,6 +106,7 @@ def movies():
     
 def movie():
     if request.method == 'GET':
+        user = request.current_user
         movie_id = request.args.get('id')
         if not movie_id:
             return jsonify({'message': 'Movie ID is required'}), 400
@@ -109,15 +115,66 @@ def movie():
         if not movie:
             return jsonify({'message': 'Movie not found'}), 404
 
-        return jsonify(movie.serialize()), 200
+        # İki dictionary'yi birleştir
+        movie_data = movie.serialize()
+        related_movies = movie.related_movies()
+        rate = Rating.query.filter_by(user_id=user.id, movie_id=movie_id).first()
+
+        # rate None değilse serialize et
+        if rate:
+            rate_data = rate.serialize()
+        else:
+            rate_data = {}
+
+        # Birleştirilmiş dictionary'yi döndür
+        response_data = {**movie_data, **related_movies, **rate_data}
+        return jsonify(response_data), 200
     
     return jsonify({'message': 'Method not allowed'}), 405
+
+
+
+def recommendation():
+    if request.method == 'GET':
+        user = request.current_user
+
+        # Kullanıcı puan verilerini veritabanından al
+        data = Rating.query.filter_by(user_id=user.id).all()
+        data = [{"userId": d.user_id, "movieId": d.movie_id, "rating": d.rating} for d in data]
+        user_ratings_df = pd.DataFrame(data)
+
+        # Birinci öneri yöntemi (get_recommended_movies)
+        recommended_movie_ids = get_recommended_movies(user.id, user_ratings_df)
+        recommended_movies = Movie.query.filter(Movie.id.in_(recommended_movie_ids)).all()
+        recommended_movies = [movie.simple_serialize() for movie in recommended_movies]
+
+        # İkinci öneri yöntemi (recommend_movies)
+        recommended_movie_ids_als = recommend_movies(user.id, data)
+        recommended_movies_als = Movie.query.filter(Movie.id.in_(recommended_movie_ids_als)).all()
+        recommended_movies_als = [movie.simple_serialize() for movie in recommended_movies_als]
+
+        # Filmleri birleştirirken tekrar edenleri çıkarma
+        movie_ids_seen = set()
+        combined_recommended_movies = []
+
+        for movie in recommended_movies:
+            if movie['id'] not in movie_ids_seen:
+                combined_recommended_movies.append(movie)
+                movie_ids_seen.add(movie['id'])
+
+        for movie in recommended_movies_als:
+            if movie['id'] not in movie_ids_seen:
+                combined_recommended_movies.append(movie)
+                movie_ids_seen.add(movie['id'])
+
+        return jsonify(combined_recommended_movies), 200
+
 
 def rating():
     if request.method == 'POST':
         data = request.get_json()
         user = request.current_user
-        movie_id = data.get('movie_id')
+        movie_id = data.get('movieId')
         rating = data.get('rating')
 
         if not movie_id or not rating:
