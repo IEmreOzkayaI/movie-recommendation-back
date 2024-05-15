@@ -50,8 +50,10 @@ def register():
         existing_user = User.query.filter_by(email=email).first()
         if existing_user:
             return jsonify({'message': 'Email already exists'}), 409
+        max_id_user = db.session.query(db.func.max(User.id)).scalar()  # Mevcut en yüksek id değerini bul
+        new_id = max(max_id_user or 99999, data.get('id', 99999)) + 1  # En düşük 100000'den başlamak için
 
-        new_user = User(email=email, password=password, name=name, surname=surname)
+        new_user = User(id=new_id,email=email, password=password, name=name, surname=surname)
         db.session.add(new_user)
         try:
             db.session.commit()
@@ -140,6 +142,8 @@ def recommendation():
 
         # Kullanıcı puan verilerini veritabanından al
         data = Rating.query.filter_by(user_id=user.id).all()
+        if(len(data) == 0):
+            return jsonify({'message': 'Please, first rate some movies for using this feature'}), 404
         data = [{"userId": d.user_id, "movieId": d.movie_id, "rating": d.rating} for d in data]
         user_ratings_df = pd.DataFrame(data)
 
